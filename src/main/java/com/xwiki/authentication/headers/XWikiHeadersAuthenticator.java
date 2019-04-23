@@ -20,6 +20,12 @@
 
 package com.xwiki.authentication.headers;
 
+import org.xwiki.model.EntityType;
+import org.xwiki.model.reference.DocumentReference;
+import org.xwiki.model.reference.DocumentReferenceResolver;
+import org.xwiki.model.reference.EntityReference;
+import org.xwiki.model.reference.EntityReferenceSerializer;
+
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -28,14 +34,9 @@ import java.util.Map;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpSession;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.xwiki.model.EntityType;
-import org.xwiki.model.reference.DocumentReference;
-import org.xwiki.model.reference.DocumentReferenceResolver;
-import org.xwiki.model.reference.EntityReference;
-import org.xwiki.model.reference.EntityReferenceSerializer;
 
 import com.xpn.xwiki.XWikiContext;
 import com.xpn.xwiki.XWikiException;
@@ -55,13 +56,14 @@ import com.xpn.xwiki.web.XWikiRequest;
  * <li>xwiki.authentication.headers.secret_field: if the header field has any value, it's validated against
  * xwiki.authentication.headers.secret_value value</li>
  * <li>xwiki.authentication.headers.auth_field: if this header field has any value the authentication is apply,
- * otherwise it's trying standard XWiki authentication. The default field is <code>{@value #DEFAULT_AUTH_FIELD}</code>.</li>
+ * otherwise it's trying standard XWiki authentication. The default field is
+ * <code>{@value #DEFAULT_AUTH_FIELD}</code>.</li>
  * <li>xwiki.authentication.headers.id_field: the value in header containing the string to use when creating the XWiki
  * user profile page. The default field is the same as auth field.</li>
  * <li>xwiki.authentication.headers.fields_mapping: mapping between HTTP header values and XWiki user profile values.
  * The default mapping is <code>{@value #DEFAULT_FIELDS_MAPPING}.</code></li>
  * </ul>
- * 
+ *
  * @version $Id: $
  */
 public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
@@ -125,7 +127,7 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
 
     /**
      * {@inheritDoc}
-     * 
+     *
      * @see com.xpn.xwiki.user.impl.xwiki.AppServerTrustedAuthServiceImpl#checkAuth(com.xpn.xwiki.XWikiContext)
      */
     @Override
@@ -170,7 +172,7 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
         // create user if needed, synchronize user group and set user in session
         DocumentReference validUser = authenticateUser(userId, context);
 
-        String user = compactWikiEntityReferenceSerializer.serialize(validUser);
+        String user = this.compactWikiEntityReferenceSerializer.serialize(validUser);
         LOG.debug("XWiki user [{}] authenticated.", user);
         return new XWikiUser(user);
     }
@@ -207,7 +209,8 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
         // convert user to avoid . and @ in names, and remove case sensitivity.
         String validUserName = getValidUserName(userId);
 
-        DocumentReference validUser = defaultDocumentReferenceResolver.resolve(validUserName, USER_SPACE_REFERENCE);
+        DocumentReference validUser = this.defaultDocumentReferenceResolver
+            .resolve(validUserName, USER_SPACE_REFERENCE);
 
         // If user already the current session user, do not try to synchronize it.
         if (!validUserName.equals(getUserInSession(context))) {
@@ -395,7 +398,6 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
     /**
      * Set the given user in the session.
      *
-     * @param user the user name.
      * @param context the current context.
      */
     private static void cleanUserInSession(XWikiContext context)
@@ -528,7 +530,7 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
 
         return this.fieldMappings;
     }
-    
+
     /**
      * @param context the XWiki context.
      * @return the mapping between HTTP header group names and values read from headers.
@@ -540,7 +542,7 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
             this.groupMappings = new HashMap<String, DocumentReference>();
             for (Map.Entry<String, String> mapping : mappings.entrySet()) {
                 this.groupMappings.put(mapping.getKey(),
-                    defaultDocumentReferenceResolver.resolve(mapping.getValue(), USER_SPACE_REFERENCE));
+                    this.defaultDocumentReferenceResolver.resolve(mapping.getValue(), USER_SPACE_REFERENCE));
             }
         }
 
@@ -555,7 +557,7 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
      * @param context the current context.
      * @return a mapping configuration.
      */
-    private static Map<String, String> getMappingsParameter(String param, String defaultParam,  XWikiContext context)
+    private static Map<String, String> getMappingsParameter(String param, String defaultParam, XWikiContext context)
     {
         Map<String, String> result = new HashMap<String, String>();
         String mappings = context.getWiki().Param(param, defaultParam);
@@ -618,7 +620,7 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
 
         try {
             BaseClass groupClass = context.getWiki().getGroupClass(context);
-            String userName = compactWikiEntityReferenceSerializer.serialize(user);
+            String userName = this.compactWikiEntityReferenceSerializer.serialize(user);
 
             // Get the XWiki document holding the objects comprising the group membership list
             XWikiDocument groupDoc = context.getWiki().getDocument(group, context);
@@ -655,7 +657,7 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
 
         try {
             BaseClass groupClass = context.getWiki().getGroupClass(context);
-            String userName = compactWikiEntityReferenceSerializer.serialize(user);
+            String userName = this.compactWikiEntityReferenceSerializer.serialize(user);
 
             // Get document representing group
             XWikiDocument groupDoc = context.getWiki().getDocument(group, context);

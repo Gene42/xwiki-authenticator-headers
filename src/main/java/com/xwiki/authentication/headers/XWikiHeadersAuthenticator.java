@@ -28,7 +28,9 @@ import org.xwiki.model.reference.EntityReferenceSerializer;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import javax.servlet.http.HttpServletRequest;
@@ -102,6 +104,8 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
      */
     private static final String USERNAME_SESSION_KEY = XWikiHeadersAuthenticator.class.getName() + ".username";
 
+    private static final String USER_NAME_PREFIX_XWIKI_XWIKI = "xwiki:XWiki.";
+    private static final String USER_NAME_PREFIX_XWIKI = "XWiki.";
 
     /**
      * Used to resolve username to document reference.
@@ -630,16 +634,57 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
             }
 
             synchronized (groupDoc) {
-                // Get and remove the specific group membership object for the user
-                BaseObject groupObj = groupDoc.getXObject(groupClass.getReference(), "member", userName);
-                groupDoc.removeXObject(groupObj);
 
-                // Save modifications
-                context.getWiki().saveDocument(groupDoc, "Header authenticator group synchronization", context);
+                boolean shouldSave = false;
+                DocumentReference groupClassReference = groupClass.getReference();
+
+                for (String userNameVariation : getUserNameVariations(userName)) {
+                    // Get and remove the specific group membership object for the user
+                    BaseObject groupObj = groupDoc.getXObject(groupClassReference, "member", userNameVariation);
+                    if (groupObj != null) {
+                        groupDoc.removeXObject(groupObj);
+                        shouldSave = true;
+                    }
+                }
+
+                if (shouldSave) {
+                    // Save modifications
+                    context.getWiki().saveDocument(groupDoc, "Header authenticator group synchronization", context);
+                }
             }
         } catch (Exception e) {
             LOG.error("Failed to remove a user [{}] from a group [{}]", user, group, e);
         }
+    }
+
+    /**
+     * This method generates the three different variations an xwiki user name can have.
+     * The full one is xwiki:XWiki.USER_NAME
+     * so the other two are XWiki.USER_NAME and USER_NAME.
+     *
+     * @return a list of user name variations
+     */
+    private static List<String> getUserNameVariations(String userName) {
+
+        if (StringUtils.isBlank(userName)) {
+            return Collections.emptyList();
+        }
+
+        String baseUsername;
+        if (StringUtils.startsWith(userName, USER_NAME_PREFIX_XWIKI_XWIKI)) {
+            baseUsername = StringUtils.removeStart(userName, USER_NAME_PREFIX_XWIKI_XWIKI);
+        } else if (StringUtils.startsWith(userName, USER_NAME_PREFIX_XWIKI)) {
+            baseUsername = StringUtils.removeStart(userName, USER_NAME_PREFIX_XWIKI);
+        } else {
+            baseUsername = userName;
+        }
+
+        List<String> userNameVariations = new ArrayList<>();
+        userNameVariations.add(USER_NAME_PREFIX_XWIKI_XWIKI + baseUsername);
+        userNameVariations.add(USER_NAME_PREFIX_XWIKI + baseUsername);
+        userNameVariations.add(baseUsername);
+
+        return userNameVariations;
     }
 
     /**

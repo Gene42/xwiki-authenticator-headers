@@ -28,7 +28,9 @@ import org.xwiki.model.reference.EntityReferenceSerializer;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import javax.servlet.http.HttpServletRequest;
@@ -90,7 +92,7 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
     private static final String DEFAULT_GROUP_FIELD = "";
     private static final String DEFAULT_FIELDS_MAPPING = "email=mail,first_name=givenname,last_name=sn";
     private static final String DEFAULT_GROUPS_MAPPING = "";
-    private static final String DEFAULT_GROUP_VALUE_SEPARATOR = "\\|";
+    private static final String DEFAULT_GROUP_VALUE_SEPARATOR = "|";
 
     /**
      * Space where user are stored in the wiki.
@@ -102,6 +104,8 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
      */
     private static final String USERNAME_SESSION_KEY = XWikiHeadersAuthenticator.class.getName() + ".username";
 
+    private static final String USER_NAME_PREFIX_XWIKI_XWIKI = "xwiki:XWiki.";
+    private static final String USER_NAME_PREFIX_XWIKI = "XWiki.";
 
     /**
      * Used to resolve username to document reference.
@@ -239,7 +243,7 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
 
         if (context.getWiki().createUser(user.getName(), extended, context) != 1) {
             throw new XWikiException(XWikiException.MODULE_XWIKI_USER, XWikiException.ERROR_XWIKI_USER_CREATE,
-                String.format("Unable to create user [{0}]", user));
+                String.format("Unable to create user [%s]", user));
         }
 
         LOG.info("Authenticated user [{}] has been successfully created.", user);
@@ -284,19 +288,17 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
         if (myGroupMappings.size() > 0) {
             try {
                 String[] groups = getGroupFieldHeaderValue(context);
-                Collection<DocumentReference> groupInRefs = new ArrayList<DocumentReference>();
-                Collection<DocumentReference> groupOutRefs = new ArrayList<DocumentReference>();
+                Collection<DocumentReference> groupInRefs = new ArrayList<>();
+                Collection<DocumentReference> groupOutRefs = new ArrayList<>();
 
                 // membership to add
-                if (groups != null) {
-                    for (String group : groups) {
-                        if (!group.trim().equals("")) {
-                            DocumentReference groupRef = myGroupMappings.get(group);
-                            if (groupRef == null) {
-                                LOG.warn("No mapping to XWiki group has been found for header group [{}].", group);
-                            } else {
-                                groupInRefs.add(groupRef);
-                            }
+                for (String group : groups) {
+                    if (!group.trim().equals("")) {
+                        DocumentReference groupRef = myGroupMappings.get(group);
+                        if (groupRef == null) {
+                            LOG.warn("No mapping to XWiki group has been found for header group [{}].", group);
+                        } else {
+                            groupInRefs.add(groupRef);
                         }
                     }
                 }
@@ -492,10 +494,10 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
     {
         String headerValue = getHeader(getGroupFieldName(context), context);
         if (StringUtils.isBlank(headerValue)) {
-            return null;
+            return new String[0];
         }
 
-        return headerValue.split(getGroupValueSeparator(context));
+        return StringUtils.split(headerValue, getGroupValueSeparator(context));
     }
 
     /**
@@ -504,7 +506,7 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
      */
     private Map<String, String> getExtendedInformations(XWikiContext context)
     {
-        Map<String, String> extInfos = new HashMap<String, String>();
+        Map<String, String> extInfos = new HashMap<>();
 
         for (Map.Entry<String, String> entry : getFieldMapping(context).entrySet()) {
             String headerValue = getHeader(entry.getValue(), context);
@@ -539,7 +541,7 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
     {
         if (this.groupMappings == null) {
             Map<String, String> mappings = getMappingsParameter(CONFIG_GROUPS_MAPPING, DEFAULT_GROUPS_MAPPING, context);
-            this.groupMappings = new HashMap<String, DocumentReference>();
+            this.groupMappings = new HashMap<>();
             for (Map.Entry<String, String> mapping : mappings.entrySet()) {
                 this.groupMappings.put(mapping.getKey(),
                     this.defaultDocumentReferenceResolver.resolve(mapping.getValue(), USER_SPACE_REFERENCE));
@@ -559,17 +561,18 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
      */
     private static Map<String, String> getMappingsParameter(String param, String defaultParam, XWikiContext context)
     {
-        Map<String, String> result = new HashMap<String, String>();
+        Map<String, String> result = new HashMap<>();
         String mappings = context.getWiki().Param(param, defaultParam);
 
         if (StringUtils.isBlank(mappings)) {
             return result;
         }
 
-        String[] parsedMappings = mappings.split(",");
+        String[] parsedMappings = StringUtils.split(mappings, ",");
 
         for (String mapping : parsedMappings) {
-            String[] parsedMapping = mapping.split("=", 2);
+
+            String[] parsedMapping = StringUtils.split(mapping, "=", 2);
             if (parsedMapping.length > 1) {
                 result.put(parsedMapping[0].trim(), parsedMapping[1].trim());
             } else {
@@ -630,16 +633,57 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
             }
 
             synchronized (groupDoc) {
-                // Get and remove the specific group membership object for the user
-                BaseObject groupObj = groupDoc.getXObject(groupClass.getReference(), "member", userName);
-                groupDoc.removeXObject(groupObj);
 
-                // Save modifications
-                context.getWiki().saveDocument(groupDoc, "Header authenticator group synchronization", context);
+                boolean shouldSave = false;
+                DocumentReference groupClassReference = groupClass.getReference();
+
+                for (String userNameVariation : getUserNameVariations(userName)) {
+                    // Get and remove the specific group membership object for the user
+                    BaseObject groupObj = groupDoc.getXObject(groupClassReference, "member", userNameVariation);
+                    if (groupObj != null) {
+                        groupDoc.removeXObject(groupObj);
+                        shouldSave = true;
+                    }
+                }
+
+                if (shouldSave) {
+                    // Save modifications
+                    context.getWiki().saveDocument(groupDoc, "Header authenticator group synchronization", context);
+                }
             }
         } catch (Exception e) {
             LOG.error("Failed to remove a user [{}] from a group [{}]", user, group, e);
         }
+    }
+
+    /**
+     * This method generates the three different variations an xwiki user name can have.
+     * The full one is xwiki:XWiki.USER_NAME
+     * so the other two are XWiki.USER_NAME and USER_NAME.
+     *
+     * @return a list of user name variations
+     */
+    private static List<String> getUserNameVariations(String userName) {
+
+        if (StringUtils.isBlank(userName)) {
+            return Collections.emptyList();
+        }
+
+        String baseUsername;
+        if (StringUtils.startsWith(userName, USER_NAME_PREFIX_XWIKI_XWIKI)) {
+            baseUsername = StringUtils.removeStart(userName, USER_NAME_PREFIX_XWIKI_XWIKI);
+        } else if (StringUtils.startsWith(userName, USER_NAME_PREFIX_XWIKI)) {
+            baseUsername = StringUtils.removeStart(userName, USER_NAME_PREFIX_XWIKI);
+        } else {
+            baseUsername = userName;
+        }
+
+        List<String> userNameVariations = new ArrayList<>();
+        userNameVariations.add(USER_NAME_PREFIX_XWIKI_XWIKI + baseUsername);
+        userNameVariations.add(USER_NAME_PREFIX_XWIKI + baseUsername);
+        userNameVariations.add(baseUsername);
+
+        return userNameVariations;
     }
 
     /**

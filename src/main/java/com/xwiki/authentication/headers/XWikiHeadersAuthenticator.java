@@ -772,15 +772,26 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
         return shouldSave;
     }
 
+    /**
+     * Container class for determining whether to add or remove a user from a Group.
+     */
     private static class AddRemoveOperation {
 
         private boolean add;
         private boolean remove;
 
+        /**
+         * Returns whether or not to perform any operation at all (it is an XOR between the add and remove flags).
+         * @return true if an operation should be performed, false otherwise
+         */
         public boolean shouldPerform() {
             return this.add ^ this.remove;
         }
 
+        /**
+         * Returns whether or not to perform any operation at all.
+         * @return true if an operation should not be performed, false otherwise
+         */
         public boolean shouldNotPerform() {
             return !this.shouldPerform();
         }

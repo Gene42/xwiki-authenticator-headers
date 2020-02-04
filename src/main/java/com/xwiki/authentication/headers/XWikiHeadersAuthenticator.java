@@ -27,15 +27,19 @@ import org.xwiki.model.reference.EntityReference;
 import org.xwiki.model.reference.EntityReferenceSerializer;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpSession;
 
+import org.apache.commons.collections.MapUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -128,6 +132,8 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
      * Cache of the group mapping.
      */
     private Map<String, DocumentReference> groupMappings;
+
+    private TimeoutDocumentLockManager documentLockManager = new TimeoutDocumentLockManager();
 
     /**
      * {@inheritDoc}
@@ -258,10 +264,10 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
      */
     private void synchronizeUser(DocumentReference user, XWikiContext context) throws XWikiException
     {
-        String database = context.getDatabase();
+        String database = context.getWikiId();
         try {
             // Switch to main wiki to force users to be global users
-            context.setDatabase(user.getWikiReference().getName());
+            context.setWikiId(user.getWikiReference().getName());
 
             // test if user already exists
             if (!context.getWiki().exists(user, context)) {
@@ -270,7 +276,7 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
 
             synchronizeGroups(user, context);
         } finally {
-            context.setDatabase(database);
+            context.setWikiId(database);
         }
     }
 
@@ -282,41 +288,44 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
      */
     private void synchronizeGroups(DocumentReference user, XWikiContext context)
     {
-        Map<String, DocumentReference> myGroupMappings = getGroupMapping(context);
+        Map<String, DocumentReference> myGroupMappings = this.getGroupMapping(context);
 
         // Only synchronize groups if a group mapping configuration exists
-        if (myGroupMappings.size() > 0) {
-            try {
-                String[] groups = getGroupFieldHeaderValue(context);
-                Collection<DocumentReference> groupInRefs = new ArrayList<>();
-                Collection<DocumentReference> groupOutRefs = new ArrayList<>();
+        if (MapUtils.isEmpty(myGroupMappings)) {
+            return;
+        }
 
-                // membership to add
-                for (String group : groups) {
-                    if (!group.trim().equals("")) {
-                        DocumentReference groupRef = myGroupMappings.get(group);
-                        if (groupRef == null) {
-                            LOG.warn("No mapping to XWiki group has been found for header group [{}].", group);
-                        } else {
-                            groupInRefs.add(groupRef);
-                        }
+        try {
+            Set<String> groups = getGroupFieldHeaderValue(context);
+
+            Set<DocumentReference> groupInRefs = new HashSet<>();
+            Set<DocumentReference> groupOutRefs = new HashSet<>();
+
+            // membership to add
+            for (String group : groups) {
+                if (!group.trim().equals("")) {
+                    DocumentReference groupRef = myGroupMappings.get(group);
+                    if (groupRef == null) {
+                        LOG.warn("No mapping to XWiki group has been found for header group [{}].", group);
+                    } else {
+                        groupInRefs.add(groupRef);
                     }
                 }
-
-                // membership to remove
-                for (DocumentReference groupRef : myGroupMappings.values()) {
-                    if (!groupInRefs.contains(groupRef)) {
-                        groupOutRefs.add(groupRef);
-                    }
-                }
-
-                // apply synch
-                syncGroupsMembership(user, groupInRefs, groupOutRefs, context);
-            } catch (Exception e) {
-                // we should continue although we have not been able to update the groups
-                // however we should log an error
-                LOG.error("Failed to update groups for user [{}]", user, e);
             }
+
+            // membership to remove
+            for (DocumentReference groupRef : myGroupMappings.values()) {
+                if (!groupInRefs.contains(groupRef)) {
+                    groupOutRefs.add(groupRef);
+                }
+            }
+
+            // apply sync
+            this.syncGroupsMembership(user, groupInRefs, groupOutRefs, context);
+        } catch (Exception e) {
+            // we should continue although we have not been able to update the groups
+            // however we should log an error
+            LOG.error("Failed to update groups for user [{}]", user, e);
         }
     }
 
@@ -490,14 +499,14 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
      * @param context the current context.
      * @return the list of group name extracted from the group field.
      */
-    private static String[] getGroupFieldHeaderValue(XWikiContext context)
+    private static Set<String> getGroupFieldHeaderValue(XWikiContext context)
     {
         String headerValue = getHeader(getGroupFieldName(context), context);
         if (StringUtils.isBlank(headerValue)) {
-            return new String[0];
+            return Collections.emptySet();
         }
 
-        return StringUtils.split(headerValue, getGroupValueSeparator(context));
+        return new HashSet<>(Arrays.asList(StringUtils.split(headerValue, getGroupValueSeparator(context))));
     }
 
     /**
@@ -508,7 +517,7 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
     {
         Map<String, String> extInfos = new HashMap<>();
 
-        for (Map.Entry<String, String> entry : getFieldMapping(context).entrySet()) {
+        for (Map.Entry<String, String> entry : this.getFieldMapping(context).entrySet()) {
             String headerValue = getHeader(entry.getValue(), context);
 
             if (!StringUtils.isBlank(headerValue)) {
@@ -523,7 +532,7 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
      * @param context the XWiki context.
      * @return the mapping between HTTP header fields names and XWiki user profile fields names.
      */
-    private Map<String, String> getFieldMapping(XWikiContext context)
+    private synchronized Map<String, String> getFieldMapping(XWikiContext context)
     {
         if (this.fieldMappings == null) {
             this.fieldMappings =
@@ -537,7 +546,7 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
      * @param context the XWiki context.
      * @return the mapping between HTTP header group names and values read from headers.
      */
-    private Map<String, DocumentReference> getGroupMapping(XWikiContext context)
+    private synchronized Map<String, DocumentReference> getGroupMapping(XWikiContext context)
     {
         if (this.groupMappings == null) {
             Map<String, String> mappings = getMappingsParameter(CONFIG_GROUPS_MAPPING, DEFAULT_GROUPS_MAPPING, context);
@@ -589,6 +598,8 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
         Collection<DocumentReference> xwikiUserGroupList =
             context.getWiki().getGroupService(context).getAllGroupsReferencesForMember(user, 0, 0, context);
 
+        Map<DocumentReference, AddRemoveOperation> groupOperationMap = new HashMap<>();
+
         if (LOG.isDebugEnabled()) {
             LOG.debug("XWiki groups the user is supposed to be member: " + groupInRefs);
             LOG.debug("XWiki groups the user is supposed to be not member: " + groupOutRefs);
@@ -597,63 +608,105 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
 
         for (DocumentReference groupRef : groupInRefs) {
             if (!xwikiUserGroupList.contains(groupRef)) {
-                addUserToXWikiGroup(user, groupRef, context);
+                groupOperationMap.computeIfAbsent(groupRef, key -> new AddRemoveOperation())
+                                 .setAdd(true);
             }
         }
 
         for (DocumentReference groupRef : groupOutRefs) {
             if (xwikiUserGroupList.contains(groupRef)) {
-                removeUserFromXWikiGroup(user, groupRef, context);
+                groupOperationMap.computeIfAbsent(groupRef, key -> new AddRemoveOperation())
+                                 .setRemove(true);
             }
+        }
+
+        String userName = this.compactWikiEntityReferenceSerializer.serialize(user);
+        BaseClass groupClass = context.getWiki().getGroupClass(context);
+
+        for (Map.Entry<DocumentReference, AddRemoveOperation> entry : groupOperationMap.entrySet()) {
+            DocumentReference group = entry.getKey();
+            AddRemoveOperation groupOperation = entry.getValue();
+            this.addOrRemoveUserForGroup(userName, group, groupOperation, groupClass, context);
+        }
+    }
+
+    /**
+     * Add or remove a user from a group. If no operation is needed the document is not saved.
+     * @param userName the name of the user to add or remove
+     * @param group           the group name to add or remove the user from
+     * @param groupOperation  operation determining whether or not to add or remove
+     * @param groupClass      the Group class BaseClass object (reused for efficiency)
+     * @param context         the XWiki context, used to save the group document if needed
+     */
+    private void addOrRemoveUserForGroup(String userName, DocumentReference group,
+        AddRemoveOperation groupOperation, BaseClass groupClass,
+        XWikiContext context)
+    {
+        // Do not process if we need to both remove and add at the same time, or none at all
+        if (groupOperation.shouldNotPerform()) {
+            return;
+        }
+
+        try {
+            this.documentLockManager.lock(group);
+            XWikiDocument cacheGroupDoc = context.getWiki().getDocument(group, context);
+
+            if (cacheGroupDoc == null || cacheGroupDoc.isNew()) {
+                throw new Exception("Group [" + group + "] does not exists");
+            }
+
+            XWikiDocument groupDoc = cacheGroupDoc.clone();
+
+            boolean shouldSave = false;
+
+            if (groupOperation.shouldAdd()) {
+                shouldSave = this.addUserToXWikiGroup(userName, groupDoc, groupClass, context);
+            } else if (groupOperation.shouldRemove()) {
+                shouldSave = this.removeUserFromXWikiGroup(userName, groupDoc, groupClass);
+            }
+
+            if (shouldSave) {
+                // Save modifications
+                context.getWiki().saveDocument(groupDoc, "Header authenticator group synchronization", context);
+            }
+
+        } catch (Exception e) {
+            LOG.error("Failed to sync a user [{}] to a group [{}]", userName, group, e);
+        } finally {
+            this.documentLockManager.unlock(group);
         }
     }
 
     /**
      * Remove user name from provided XWiki group.
      *
-     * @param user the user.
-     * @param group the name of the group.
-     * @param context the XWiki context.
+     * @param userName the user.
+     * @param groupDoc the group document.
+     * @param groupClass the Group BaseClass object.
      */
-    private void removeUserFromXWikiGroup(DocumentReference user, DocumentReference group, XWikiContext context)
+    private boolean removeUserFromXWikiGroup(String userName, XWikiDocument groupDoc, BaseClass groupClass)
     {
         if (LOG.isDebugEnabled()) {
-            LOG.debug("Removing user [{}] from xwiki group [{}]", user, group);
+            LOG.debug("Removing user [{}] from xwiki group [{}]", userName, groupDoc.getDocumentReference());
         }
 
+        boolean shouldSave = false;
         try {
-            BaseClass groupClass = context.getWiki().getGroupClass(context);
-            String userName = this.compactWikiEntityReferenceSerializer.serialize(user);
+            DocumentReference groupClassReference = groupClass.getReference();
 
-            // Get the XWiki document holding the objects comprising the group membership list
-            XWikiDocument groupDoc = context.getWiki().getDocument(group, context);
-
-            if (groupDoc.isNew()) {
-                throw new Exception("Group [" + group + "] does not exists");
-            }
-
-            synchronized (groupDoc) {
-
-                boolean shouldSave = false;
-                DocumentReference groupClassReference = groupClass.getReference();
-
-                for (String userNameVariation : getUserNameVariations(userName)) {
-                    // Get and remove the specific group membership object for the user
-                    BaseObject groupObj = groupDoc.getXObject(groupClassReference, "member", userNameVariation);
-                    if (groupObj != null) {
-                        groupDoc.removeXObject(groupObj);
-                        shouldSave = true;
-                    }
-                }
-
-                if (shouldSave) {
-                    // Save modifications
-                    context.getWiki().saveDocument(groupDoc, "Header authenticator group synchronization", context);
+            for (String userNameVariation : getUserNameVariations(userName)) {
+                // Get and remove the specific group membership object for the user
+                BaseObject groupObj = groupDoc.getXObject(groupClassReference, "member", userNameVariation);
+                if (groupObj != null) {
+                    groupDoc.removeXObject(groupObj);
+                    shouldSave = true;
                 }
             }
         } catch (Exception e) {
-            LOG.error("Failed to remove a user [{}] from a group [{}]", user, group, e);
+            LOG.error("Failed to remove a user [{}] from a group [{}]", userName, groupDoc.getDocumentReference(), e);
         }
+
+        return shouldSave;
     }
 
     /**
@@ -689,38 +742,98 @@ public class XWikiHeadersAuthenticator extends XWikiAuthServiceImpl
     /**
      * Add user name to provided XWiki group.
      *
-     * @param user the user.
-     * @param group the name of the group.
+     * @param userName the user.
+     * @param groupDoc the group document.
      * @param context the XWiki context.
      */
-    private void addUserToXWikiGroup(DocumentReference user, DocumentReference group, XWikiContext context)
+    private boolean addUserToXWikiGroup(String userName, XWikiDocument groupDoc, BaseClass groupClass,
+        XWikiContext context)
     {
         if (LOG.isDebugEnabled()) {
-            LOG.debug("Adding user [{}] to xwiki group [{}]", user, group);
+            LOG.debug("Adding user [{}] to xwiki group [{}]", userName, groupDoc.getDocumentReference());
         }
 
+        boolean shouldSave = false;
+
         try {
-            BaseClass groupClass = context.getWiki().getGroupClass(context);
-            String userName = this.compactWikiEntityReferenceSerializer.serialize(user);
-
-            // Get document representing group
-            XWikiDocument groupDoc = context.getWiki().getDocument(group, context);
-
-            if (groupDoc.isNew()) {
-                throw new Exception("Group [" + group + "] does not exists");
-            }
-
-            synchronized (groupDoc) {
+            BaseObject groupObj = groupDoc.getXObject(groupClass.getReference(), "member", userName);
+            if (groupObj == null) {
                 // Add a member object to document
                 BaseObject memberObj = groupDoc.newXObject(groupClass.getReference(), context);
                 memberObj.setStringValue("member", userName);
-
-                // Save modifications
-                context.getWiki().saveDocument(groupDoc, "Header authenticator group synchronization", context);
+                shouldSave = true;
+            } else {
+                LOG.warn("User [{}] is already part of group [{}]", userName, groupDoc.getDocumentReference());
             }
         } catch (Exception e) {
-            LOG.error("Failed to add a user [{}] to a group [{}]", user, group, e);
+            LOG.error("Failed to add a user [{}] to a group [{}]", userName, groupDoc.getDocumentReference(), e);
         }
+
+        return shouldSave;
     }
 
+    /**
+     * Container class for determining whether to add or remove a user from a Group.
+     */
+    private static class AddRemoveOperation {
+
+        private boolean add;
+        private boolean remove;
+
+        /**
+         * Returns whether or not to perform any operation at all (it is an XOR between the add and remove flags).
+         * @return true if an operation should be performed, false otherwise
+         */
+        public boolean shouldPerform() {
+            return this.add ^ this.remove;
+        }
+
+        /**
+         * Returns whether or not to perform any operation at all.
+         * @return true if an operation should not be performed, false otherwise
+         */
+        public boolean shouldNotPerform() {
+            return !this.shouldPerform();
+        }
+
+        /**
+         * Getter for add.
+         *
+         * @return add
+         */
+        public boolean shouldAdd() {
+            return this.add;
+        }
+
+        /**
+         * Setter for add.
+         *
+         * @param add add to set
+         * @return this object
+         */
+        public AddRemoveOperation setAdd(boolean add) {
+            this.add = add;
+            return this;
+        }
+
+        /**
+         * Getter for delete.
+         *
+         * @return delete
+         */
+        public boolean shouldRemove() {
+            return this.remove;
+        }
+
+        /**
+         * Setter for delete.
+         *
+         * @param remove delete to set
+         * @return this object
+         */
+        public AddRemoveOperation setRemove(boolean remove) {
+            this.remove = remove;
+            return this;
+        }
+    }
 }
